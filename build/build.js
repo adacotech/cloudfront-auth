@@ -18,7 +18,7 @@ prompt.get({
       required: true
     },
     method: {
-      description: colors.red("Authentication methods:\n    (1) Google\n    (2) Microsoft\n    (3) GitHub\n    (4) OKTA\n    (5) Auth0\n    (6) Centrify\n    (7) OKTA Native\n\n    Select an authentication method")
+      description: colors.red("Authentication methods:\n    (1) Google\n    (2) Microsoft\n    (3) GitHub\n    (4) OKTA\n    (5) Auth0\n    (6) Centrify\n    (7) OKTA Native\n    (8) Auth0 RBAC\n\n    Select an authentication method")
     }
   }
 }, function (err, result) {
@@ -80,6 +80,13 @@ prompt.get({
       }
       config.AUTHN = "OKTA_NATIVE";
       oktaConfiguration();
+      break;
+    case '8':
+      if (R.pathOr('', ['AUTHN'], oldConfig) != "AUTH0RBAC") {
+        oldConfig = undefined;
+      }
+      config.AUTHN = "AUTH0RBAC";
+      auth0RbacConfiguration();
       break;
     default:
       console.log("Method not recognized. Stopping build...");
@@ -580,6 +587,84 @@ function centrifyConfiguration() {
 
     shell.cp('./authz/centrify.js', './distributions/' + config.DISTRIBUTION + '/auth.js');
     writeConfig(config, zip, ['config.json', 'index.js', 'auth.js', 'nonce.js']);
+  });
+}
+
+function auth0RbacConfiguration() {
+  var properties = {
+    BASE_URL: {
+      message: colors.red("Base URL"),
+      required: true,
+      default: R.pathOr('', ['BASE_URL'], oldConfig)
+    },
+    CLIENT_ID: {
+      message: colors.red("Client ID"),
+      required: true,
+      default: R.pathOr('', ['AUTH_REQUEST', 'client_id'], oldConfig)
+    },
+    REDIRECT_URI: {
+      message: colors.red("Redirect URI"),
+      required: true,
+      default: R.pathOr('', ['AUTH_REQUEST', 'redirect_uri'], oldConfig)
+    },
+    SESSION_DURATION: {
+      pattern: /^[0-9]*$/,
+      description: colors.red("Session Duration (hours)"),
+      message: colors.green("Entry must only contain numbers"),
+      required: true,
+      default: R.pathOr('', ['SESSION_DURATION'], oldConfig)/60/60
+    }
+  };
+
+  if (config.AUTHN == 'AUTH0RBAC') {
+    properties['PKCE_CODE_VERIFIER_LENGTH'] = {
+      message: colors.red("Length of random PKCE code_verifier (default: 43)"),
+      required: true,
+      default: R.pathOr('', ['PKCE_CODE_VERIFIER_LENGTH'], oldConfig)
+    }
+
+    properties['AUDIENCE'] = {
+      message: colors.red("Audience"),
+      required: true,
+      default: R.pathOr('', ['AUDIENCE'], oldConfig)
+    }
+  }
+
+  prompt.message = colors.blue(">>");
+  prompt.start();
+  prompt.get({
+    properties: properties
+  }, function(err, result) {
+    config.PRIVATE_KEY = fs.readFileSync('distributions/' + config.DISTRIBUTION + '/id_rsa', 'utf8');
+    config.PUBLIC_KEY = fs.readFileSync('distributions/' + config.DISTRIBUTION + '/id_rsa.pub', 'utf8');
+    config.DISCOVERY_DOCUMENT = result.BASE_URL + '/.well-known/openid-configuration';
+    config.SESSION_DURATION = parseInt(result.SESSION_DURATION, 10) * 60 * 60;
+
+    config.BASE_URL = result.BASE_URL;
+    config.CALLBACK_PATH = url.parse(result.REDIRECT_URI).pathname;
+
+    config.AUTH_REQUEST.client_id = result.CLIENT_ID;
+    config.AUTH_REQUEST.response_type = 'code';
+    config.AUTH_REQUEST.scope = 'openid';
+    config.AUTH_REQUEST.redirect_uri = result.REDIRECT_URI;
+    config.AUTH_REQUEST.audience = result.AUDIENCE;
+
+    config.TOKEN_REQUEST.client_id = result.CLIENT_ID;
+    config.TOKEN_REQUEST.redirect_uri = result.REDIRECT_URI;
+    config.TOKEN_REQUEST.grant_type = 'authorization_code';
+    var files = ['config.json', 'index.js', 'auth.js', 'nonce.js'];
+
+    config.PKCE_CODE_VERIFIER_LENGTH = result.PKCE_CODE_VERIFIER_LENGTH || "43";
+    shell.cp('./code-challenge.js', './distributions/' + config.DISTRIBUTION + '/code-challenge.js');
+    shell.cp('./authn/auth0.index.js', './distributions/' + config.DISTRIBUTION + '/index.js');
+    files.push('code-challenge.js');
+
+    config.AUTHZ = "AUTH0RBAC";
+
+    shell.cp('./nonce.js', './distributions/' + config.DISTRIBUTION + '/nonce.js');
+    fs.writeFileSync('distributions/' + config.DISTRIBUTION + '/config.json', JSON.stringify(result, null, 4));
+    shell.cp('./authz/auth0.rbac.js', './distributions/' + config.DISTRIBUTION + '/auth.js');
+    writeConfig(config, zip, files);
   });
 }
 
